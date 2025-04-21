@@ -2,17 +2,18 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Button, Container, Form } from "react-bootstrap";
 import { Link, useNavigate } from "react-router-dom";
 import { SCREEN_URL } from "../../../../constants/screen/PathScreen";
-import { useDispatch, useSelector } from "react-redux"; // Thêm useSelector
+import { useDispatch, useSelector } from "react-redux";
 import { login } from "../../../../store/user/userSlice";
-import { getCurrent } from "../../../../store/user/asynsActions"; // Thêm getCurrent
+import { getCurrent } from "../../../../store/user/asynsActions";
 import Swal from "sweetalert2";
 import { validate } from "../../../../utils/helpers";
 import { loginAPI, regisAPI } from "../../../../api/authAPI";
+import axios from "axios";
 
 const LoginPage = () => {
     const dispatch = useDispatch();
     const navigate = useNavigate();
-    const { isLoggedIn, current } = useSelector((state) => state.user);
+    const { isLoggedIn } = useSelector((state) => state.user);
 
     // State
     const [isRegister, setIsRegister] = useState(false);
@@ -25,6 +26,7 @@ const LoginPage = () => {
     });
     const [error, setError] = useState("");
     const [invalidFields, setInvalidFields] = useState([]);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Kiểm tra trạng thái isLoggedIn và chuyển hướng nếu đã đăng nhập
     useEffect(() => {
@@ -48,24 +50,29 @@ const LoginPage = () => {
     }, [isRegister]);
 
     // Xử lý thay đổi input
-    const handleInputChange = (e, key) => {
+    const handleInputChange = useCallback((e, key) => {
         setPayload((prev) => ({ ...prev, [key]: e.target.value }));
         setError("");
-        setInvalidFields([]); // Xóa lỗi khi người dùng nhập lại
-    };
+        setInvalidFields((prev) => prev.filter(item => item.name !== key)); // Chỉ xóa lỗi của trường đang nhập
+    }, []);
 
     // Xử lý submit form
     const handleSubmit = useCallback(async () => {
-        const { name, phone, address, ...loginData } = payload;
-        const dataToValidate = isRegister ? payload : loginData;
-        const inValids = validate(dataToValidate, setInvalidFields);
-        console.log("Invalids:", inValids); // Log để kiểm tra
+        if (isSubmitting) return; // Tránh submit nhiều lần
+        
+        setIsSubmitting(true);
+        try {
+            // Tạo dữ liệu cần thiết dựa vào trạng thái đăng nhập hay đăng ký
+            const dataToValidate = isRegister 
+                ? payload 
+                : { email: payload.email, password: payload.password };
+            
+            const inValids = validate(dataToValidate, setInvalidFields);
 
-        if (inValids === 0) {
-            try {
+            if (inValids === 0) {
                 if (isRegister) {
                     const response = await regisAPI(payload);
-                    if (response.user) {
+                    if (response && response.user) {
                         Swal.fire(
                             "Đăng ký thành công!",
                             "Vui lòng đăng nhập để tiếp tục.",
@@ -74,11 +81,11 @@ const LoginPage = () => {
                             setIsRegister(false);
                         });
                     } else {
-                        throw new Error(response.message || "Đăng ký thất bại!");
+                        throw new Error(response?.message || "Đăng ký thất bại!");
                     }
                 } else {
                     const response = await loginAPI(payload.email, payload.password);
-                    if (response.user) {
+                    if (response && response.user) {
                         Swal.fire(
                             "Đăng nhập thành công!",
                             `Chào mừng ${response.user.name || "bạn"}!`,
@@ -97,24 +104,55 @@ const LoginPage = () => {
                         throw new Error("Thông tin đăng nhập không đúng!");
                     }
                 }
-            } catch (error) {
-                const errorMessage =
-                    error.message ||
-                    error.response?.data?.error ||
-                    "Đã xảy ra lỗi. Vui lòng thử lại sau.";
-                setError(errorMessage);
-                Swal.fire("Lỗi!", errorMessage, "error");
             }
-        } else {
-            console.log("Validation failed. Payload:", dataToValidate);
+        } catch (error) {
+            let errorMessage = "Đã xảy ra lỗi. Vui lòng thử lại sau.";
+            
+            // Xử lý lỗi Axios
+            if (axios.isAxiosError(error)) {
+                if (error.response) {
+                    // Lỗi HTTP từ server (400, 401, 500...)
+                    const responseData = error.response.data;
+                    errorMessage = responseData.message || 
+                                  responseData.error || 
+                                  `Lỗi ${error.response.status}: ${error.response.statusText}`;
+                    
+                    // Xử lý riêng cho lỗi 400
+                    if (error.response.status === 400) {
+                        if (responseData.errors && Array.isArray(responseData.errors)) {
+                            // Nếu server trả về danh sách lỗi cho từng trường
+                            const fieldErrors = responseData.errors.map(err => ({
+                                name: err.field,
+                                message: err.message
+                            }));
+                            setInvalidFields(fieldErrors);
+                        }
+                        errorMessage = responseData.message || "Dữ liệu không hợp lệ. Vui lòng kiểm tra lại.";
+                    }
+                } else if (error.request) {
+                    // Không nhận được phản hồi từ server
+                    errorMessage = "Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng.";
+                }
+            } else if (error.message) {
+                // Lỗi không phải từ Axios
+                errorMessage = error.message;
+            }
+            
+            setError(errorMessage);
+            Swal.fire("Lỗi!", errorMessage, "error");
+        } finally {
+            setIsSubmitting(false);
         }
-    }, [payload, isRegister, dispatch, navigate]);
+    }, [payload, isRegister, dispatch, navigate, isSubmitting]);
 
     return (
         <div className="d-flex justify-content-center align-items-center vh-100">
             <Container bsPrefix="col-5">
                 <h2 className="text-center mb-4">{isRegister ? "Đăng ký" : "Đăng nhập"}</h2>
-                <Form>
+                <Form onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSubmit();
+                }}>
                     {isRegister && (
                         <>
                             <Form.Group className="mb-3">
@@ -196,8 +234,9 @@ const LoginPage = () => {
                             </Link>
                         )}
                         <span
-                            className="text-primary cursor-pointer"
+                            className="text-primary"
                             onClick={() => setIsRegister(!isRegister)}
+                            style={{ cursor: "pointer" }}
                         >
                             {isRegister ? "Đã có tài khoản? Đăng nhập" : "Chưa có tài khoản? Đăng ký"}
                         </span>
@@ -205,8 +244,13 @@ const LoginPage = () => {
 
                     {error && <div className="text-danger mb-3">{error}</div>}
 
-                    <Button variant="primary" onClick={handleSubmit} className="w-100">
-                        {isRegister ? "Đăng ký" : "Đăng nhập"}
+                    <Button 
+                        variant="primary" 
+                        type="submit" 
+                        className="w-100"
+                        disabled={isSubmitting}
+                    >
+                        {isSubmitting ? 'Đang xử lý...' : (isRegister ? "Đăng ký" : "Đăng nhập")}
                     </Button>
 
                     <div className="text-center mt-3">
